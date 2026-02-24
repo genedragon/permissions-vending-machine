@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.env
+.DS_Store
+*.zip
+build/
+dist/
+test-*.json
+*.bak
