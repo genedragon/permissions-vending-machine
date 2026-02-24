@@ -1,235 +1,838 @@
-# PVM Deployment Guide - Callback-Free + DynamoDB Allowlist
+# AWS Permissions Vending Machine - Deployment Guide
 
-## What's New
-
-✅ Callbacks removed - Users poll status endpoint instead  
-✅ Allowlist centralized in DynamoDB table  
-✅ Step Functions simplified (27 → 21 states)  
-✅ ~343 lines of code removed  
+Complete step-by-step instructions for deploying PVM infrastructure to AWS.
 
 ## Prerequisites
 
-- AWS CLI configured with admin access
-- Node.js installed (for running scripts)
-- Lambda packages built (`./scripts/rebuild-lambdas.sh` already run)
+- AWS Account with administrative access
+- AWS CLI installed and configured
+- Node.js 18+ installed
+- Python 3.9+ installed
+- Git (for cloning the repository)
 
-## Deployment Steps
+## Deployment Overview
 
-### Step 1: Create DynamoDB Allowlist Table
+PVM requires deploying the following AWS resources:
 
-```bash
-cd /home/ubuntu/.openclaw/workspace/aws-permissions-vending-machine
-node scripts/create-allowlist-table.js
-```
-
-**Required IAM Permission:**
-- `dynamodb:CreateTable`
-- `dynamodb:PutItem` (for initial data)
-
-**What it creates:**
-- Table: `pvm-allowlist`
-- Initial allowlist with DynamoDB cleanup actions
+1. **DynamoDB Tables** - Request storage and resource allowlists
+2. **IAM Roles** - Execution roles for Lambda and Step Functions
+3. **Lambda Functions** - API handler and workflow tasks
+4. **Step Functions State Machine** - Approval workflow orchestration
+5. **API Gateway** - REST API endpoints
+6. **SSM Parameters** - Configuration storage
+7. **SES Configuration** - Email delivery setup
 
 ---
 
-### Step 2: Add IAM Permissions for Lambdas
+## Step-by-Step Deployment
 
-**All Lambda execution roles need:**
+### 1. Clone and Install
 
 ```bash
+git clone https://github.com/YOUR-ORG/aws-permissions-vending-machine.git
+cd aws-permissions-vending-machine
+npm install
+```
+
+### 2. Configure SSM Parameters
+
+Create configuration in AWS Systems Manager Parameter Store:
+
+```bash
+# Set approver email (receives approval requests)
+aws ssm put-parameter \
+  --name /pvm/approver-email \
+  --value "your-email@example.com" \
+  --type String \
+  --overwrite
+
+# Generate and store JWT secret for callback URLs
+node scripts/generate-jwt-secret.js
+```
+
+**What this does:**
+- Creates `/pvm/approver-email` parameter with your email
+- Generates secure random secret and stores at `/pvm/jwt-secret`
+- JWT secret is used to sign approval/denial callback URLs
+
+**Verify:**
+```bash
+aws ssm get-parameter --name /pvm/approver-email
+aws ssm get-parameter --name /pvm/jwt-secret --with-decryption
+```
+
+---
+
+### 3. Create DynamoDB Tables
+
+```bash
+node scripts/create-tables.js
+```
+
+**What this creates:**
+
+**Table: `pvm-requests`**
+- Primary Key: `request_id` (String)
+- Stores: Permission request lifecycle (PENDING → ACTIVE → REVOKED)
+- Attributes: requester, permissions, status, timestamps, expiration
+
+**Table: `pvm-allowlists`**
+- Composite Key: `list_id` (String) + `resource_arn` (String)
+- Stores: Authorized resources that can be requested
+- Example: `{ list_id: "s3-buckets", resource_arn: "arn:aws:s3:::my-bucket" }`
+
+**Verify:**
+```bash
+aws dynamodb list-tables | grep pvm
+aws dynamodb describe-table --table-name pvm-requests
+aws dynamodb describe-table --table-name pvm-allowlists
+```
+
+---
+
+### 4. Create IAM Roles
+
+#### A. Lambda Execution Role
+
+Create base execution role for Lambda functions:
+
+```bash
+# Create trust policy
+cat > /tmp/lambda-trust-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "lambda.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Create role
+aws iam create-role \
+  --role-name pvm-lambda-execution-role \
+  --assume-role-policy-document file:///tmp/lambda-trust-policy.json
+
+# Attach CloudWatch Logs policy
+aws iam attach-role-policy \
+  --role-name pvm-lambda-execution-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+```
+
+#### B. Lambda Permissions Policy
+
+Create inline policy with DynamoDB, SSM, SES, Step Functions, and IAM access:
+
+```bash
+cat > /tmp/pvm-lambda-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:*:*:table/pvm-requests",
+        "arn:aws:dynamodb:*:*:table/pvm-allowlists"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/pvm/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ses:SendEmail",
+        "ses:SendRawEmail"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "states:StartExecution",
+        "states:SendTaskSuccess",
+        "states:SendTaskFailure"
+      ],
+      "Resource": "arn:aws:states:*:*:stateMachine:pvm-workflow"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:CreatePolicy",
+        "iam:GetRole"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
 aws iam put-role-policy \
-  --role-name pvm-prod-ApiFunctionRole-XXXXX \
-  --policy-name AllowlistRead \
-  --policy-document file://iam-policy-allowlist-read.json
-
-# Repeat for each task Lambda role:
-# - pvm-prod-StoreRequestFunctionRole-XXXXX
-# - pvm-prod-SendApprovalEmailFunctionRole-XXXXX
-# - pvm-prod-GrantPermissionsFunctionRole-XXXXX
-# - pvm-prod-RevokePermissionsFunctionRole-XXXXX
+  --role-name pvm-lambda-execution-role \
+  --policy-name pvm-permissions \
+  --policy-document file:///tmp/pvm-lambda-policy.json
 ```
 
-Or attach managed policy to all roles.
+**Note:** The IAM permissions allow grant/revoke Lambdas to attach/detach policies dynamically.
+
+#### C. Step Functions Execution Role
+
+Create role for Step Functions to invoke Lambda:
+
+```bash
+# Create trust policy
+cat > /tmp/sfn-trust-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "states.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Create role
+aws iam create-role \
+  --role-name pvm-step-functions-role \
+  --assume-role-policy-document file:///tmp/sfn-trust-policy.json
+
+# Attach Lambda invocation policy
+aws iam attach-role-policy \
+  --role-name pvm-step-functions-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+```
+
+**Verify:**
+```bash
+aws iam get-role --role-name pvm-lambda-execution-role
+aws iam get-role --role-name pvm-step-functions-role
+```
 
 ---
 
-### Step 3: Set Environment Variables
+### 5. Deploy Lambda Functions
 
-**All Lambdas need:**
-
-```bash
-# API Lambda
-aws lambda update-function-configuration \
-  --function-name pvm-api \
-  --environment Variables="{DYNAMODB_ALLOWLIST_TABLE=pvm-allowlist}" \
-  --region us-west-2
-
-# Task Lambdas (repeat for each)
-aws lambda update-function-configuration \
-  --function-name pvm-store-request \
-  --environment Variables="{DYNAMODB_ALLOWLIST_TABLE=pvm-allowlist}" \
-  --region us-west-2
-
-# ... (repeat for other 3 task functions)
-```
-
----
-
-### Step 4: Deploy Lambda Functions
+Build and deploy all Lambda functions:
 
 ```bash
+# Build Lambda packages
+./scripts/rebuild-lambdas.sh
+
+# Deploy all functions
 ./scripts/deploy-lambdas.sh
 ```
 
-This deploys all 5 Lambda functions with callback-free code + DynamoDB allowlist loading.
+**What this deploys:**
+
+| Function | Purpose | Trigger |
+|----------|---------|---------|
+| `pvm-api` | API Gateway handler | HTTP requests |
+| `pvm-store-request` | Store request to DynamoDB | Step Functions task |
+| `pvm-send-approval-email` | Send approval email via SES | Step Functions task |
+| `pvm-grant-permissions` | Attach IAM policy | Step Functions task |
+| `pvm-revoke-permissions` | Detach IAM policy | Step Functions task |
+| `pvm-log-failure` | Log errors to DynamoDB | Step Functions error handler |
+
+**Manual deployment (if script doesn't work):**
+
+```bash
+# Get Lambda execution role ARN
+LAMBDA_ROLE_ARN=$(aws iam get-role --role-name pvm-lambda-execution-role --query 'Role.Arn' --output text)
+
+# Deploy API Lambda
+cd src
+zip -r ../pvm-api.zip .
+cd ..
+
+aws lambda create-function \
+  --function-name pvm-api \
+  --runtime nodejs18.x \
+  --role $LAMBDA_ROLE_ARN \
+  --handler api.handler \
+  --zip-file fileb://pvm-api.zip \
+  --timeout 30 \
+  --memory-size 256
+
+# Repeat for task functions in src/tasks/
+# (store-request, send-approval-email, grant-permissions, revoke-permissions, log-failure)
+```
+
+**Set environment variables:**
+
+```bash
+aws lambda update-function-configuration \
+  --function-name pvm-api \
+  --environment Variables="{
+    REQUESTS_TABLE=pvm-requests,
+    ALLOWLISTS_TABLE=pvm-allowlists
+  }"
+
+# Repeat for all Lambda functions
+```
+
+**Verify:**
+```bash
+aws lambda list-functions | grep pvm
+aws lambda get-function --function-name pvm-api
+```
 
 ---
 
-### Step 5: Update Step Functions State Machine
+### 6. Create Step Functions State Machine
+
+Get Lambda ARNs and update state machine definition:
 
 ```bash
-# Get current state machine ARN
-STATE_MACHINE_ARN="arn:aws:states:us-west-2:YOUR-ACCOUNT-ID:stateMachine:pvm-workflow"
+# Get ARNs
+API_ARN=$(aws lambda get-function --function-name pvm-api --query 'Configuration.FunctionArn' --output text)
+STORE_ARN=$(aws lambda get-function --function-name pvm-store-request --query 'Configuration.FunctionArn' --output text)
+EMAIL_ARN=$(aws lambda get-function --function-name pvm-send-approval-email --query 'Configuration.FunctionArn' --output text)
+GRANT_ARN=$(aws lambda get-function --function-name pvm-grant-permissions --query 'Configuration.FunctionArn' --output text)
+REVOKE_ARN=$(aws lambda get-function --function-name pvm-revoke-permissions --query 'Configuration.FunctionArn' --output text)
+FAILURE_ARN=$(aws lambda get-function --function-name pvm-log-failure --query 'Configuration.FunctionArn' --output text)
 
-# Update with callback-free definition
-aws stepfunctions update-state-machine \
-  --state-machine-arn $STATE_MACHINE_ARN \
+echo "Store: $STORE_ARN"
+echo "Email: $EMAIL_ARN"
+echo "Grant: $GRANT_ARN"
+echo "Revoke: $REVOKE_ARN"
+echo "Failure: $FAILURE_ARN"
+```
+
+**Update `docs/step-functions-state-machine.json`** with your Lambda ARNs, then create the state machine:
+
+```bash
+# Get Step Functions role ARN
+SFN_ROLE_ARN=$(aws iam get-role --role-name pvm-step-functions-role --query 'Role.Arn' --output text)
+
+# Create state machine
+aws stepfunctions create-state-machine \
+  --name pvm-workflow \
   --definition file://docs/step-functions-state-machine.json \
-  --region us-west-2
+  --role-arn $SFN_ROLE_ARN
 ```
 
-**Changes:**
-- Removed: SendApprovalCallback, SendDenialCallback, SendRevocationCallback
-- Removed: CheckRevocationCallbackEnabled choice state
-- Simplified success/failure paths
+**Verify:**
+```bash
+aws stepfunctions list-state-machines | grep pvm-workflow
+aws stepfunctions describe-state-machine \
+  --state-machine-arn arn:aws:states:REGION:ACCOUNT:stateMachine:pvm-workflow
+```
 
 ---
 
-### Step 6: Delete Old SendCallback Lambda (Optional)
+### 7. Create API Gateway
+
+#### Option A: AWS Console (Recommended for First Deployment)
+
+1. **Create REST API:**
+   - Go to API Gateway Console
+   - Click "Create API"
+   - Choose "REST API" (not private)
+   - Name: `pvm-api`
+   - Click "Create"
+
+2. **Create `/permissions` resource:**
+   - Click "Create Resource"
+   - Resource Name: `permissions`
+   - Resource Path: `/permissions`
+   - Click "Create"
+
+3. **Create `/permissions/request` resource:**
+   - Select `/permissions`
+   - Click "Create Resource"
+   - Resource Name: `request`
+   - Resource Path: `/request`
+   - Click "Create"
+
+4. **Add POST method to `/permissions/request`:**
+   - Select `/permissions/request`
+   - Click "Create Method"
+   - Method type: POST
+   - Integration type: Lambda Function
+   - Lambda Function: `pvm-api`
+   - Click "Create"
+
+5. **Create `/permissions/status` resource:**
+   - Select `/permissions`
+   - Click "Create Resource"
+   - Resource Name: `status`
+   - Click "Create"
+
+6. **Create `{requestId}` path parameter:**
+   - Select `/permissions/status`
+   - Click "Create Resource"
+   - Resource Name: `{requestId}`
+   - Click "Create"
+
+7. **Add GET method to `/permissions/status/{requestId}`:**
+   - Select `/permissions/status/{requestId}`
+   - Click "Create Method"
+   - Method type: GET
+   - Integration type: Lambda Function
+   - Lambda Function: `pvm-api`
+   - Click "Create"
+
+8. **Create `/permissions/callback` resource:**
+   - Select `/permissions`
+   - Click "Create Resource"
+   - Resource Name: `callback`
+   - Click "Create"
+
+9. **Add GET method to `/permissions/callback`:**
+   - Select `/permissions/callback`
+   - Click "Create Method"
+   - Method type: GET
+   - Integration type: Lambda Function
+   - Lambda Function: `pvm-api`
+   - Click "Create"
+
+10. **Deploy API:**
+    - Click "Deploy API"
+    - Deployment stage: [New Stage] `prod`
+    - Click "Deploy"
+
+11. **Note the API URL:**
+    - After deployment, you'll see: `https://YOUR-API-ID.execute-api.REGION.amazonaws.com/prod`
+    - Save this URL for configuration
+
+#### Option B: AWS CLI
 
 ```bash
-aws lambda delete-function \
-  --function-name pvm-send-callback \
-  --region us-west-2
+# Get API Lambda ARN
+API_LAMBDA_ARN=$(aws lambda get-function --function-name pvm-api --query 'Configuration.FunctionArn' --output text)
+
+# Create REST API
+API_ID=$(aws apigateway create-rest-api \
+  --name pvm-api \
+  --description "Permissions Vending Machine API" \
+  --query 'id' \
+  --output text)
+
+echo "API ID: $API_ID"
+
+# Get root resource ID
+ROOT_ID=$(aws apigateway get-resources \
+  --rest-api-id $API_ID \
+  --query 'items[0].id' \
+  --output text)
+
+# Create /permissions resource
+PERM_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $ROOT_ID \
+  --path-part permissions \
+  --query 'id' \
+  --output text)
+
+# Create /permissions/request resource
+REQUEST_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $PERM_ID \
+  --path-part request \
+  --query 'id' \
+  --output text)
+
+# Add POST method to /permissions/request
+aws apigateway put-method \
+  --rest-api-id $API_ID \
+  --resource-id $REQUEST_ID \
+  --http-method POST \
+  --authorization-type NONE
+
+# Configure Lambda integration for POST /permissions/request
+REGION=$(aws configure get region)
+ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+
+aws apigateway put-integration \
+  --rest-api-id $API_ID \
+  --resource-id $REQUEST_ID \
+  --http-method POST \
+  --type AWS_PROXY \
+  --integration-http-method POST \
+  --uri "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${API_LAMBDA_ARN}/invocations"
+
+# Create /permissions/status resource
+STATUS_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $PERM_ID \
+  --path-part status \
+  --query 'id' \
+  --output text)
+
+# Create {requestId} path parameter resource
+REQID_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $STATUS_ID \
+  --path-part '{requestId}' \
+  --query 'id' \
+  --output text)
+
+# Add GET method to /permissions/status/{requestId}
+aws apigateway put-method \
+  --rest-api-id $API_ID \
+  --resource-id $REQID_ID \
+  --http-method GET \
+  --authorization-type NONE \
+  --request-parameters method.request.path.requestId=true
+
+# Configure Lambda integration for GET /permissions/status/{requestId}
+aws apigateway put-integration \
+  --rest-api-id $API_ID \
+  --resource-id $REQID_ID \
+  --http-method GET \
+  --type AWS_PROXY \
+  --integration-http-method POST \
+  --uri "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${API_LAMBDA_ARN}/invocations"
+
+# Create /permissions/callback resource
+CALLBACK_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $PERM_ID \
+  --path-part callback \
+  --query 'id' \
+  --output text)
+
+# Add GET method to /permissions/callback
+aws apigateway put-method \
+  --rest-api-id $API_ID \
+  --resource-id $CALLBACK_ID \
+  --http-method GET \
+  --authorization-type NONE
+
+# Configure Lambda integration for GET /permissions/callback
+aws apigateway put-integration \
+  --rest-api-id $API_ID \
+  --resource-id $CALLBACK_ID \
+  --http-method GET \
+  --type AWS_PROXY \
+  --integration-http-method POST \
+  --uri "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${API_LAMBDA_ARN}/invocations"
+
+# Grant API Gateway permission to invoke Lambda
+aws lambda add-permission \
+  --function-name pvm-api \
+  --statement-id apigateway-invoke \
+  --action lambda:InvokeFunction \
+  --principal apigateway.amazonaws.com \
+  --source-arn "arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*"
+
+# Deploy API to prod stage
+aws apigateway create-deployment \
+  --rest-api-id $API_ID \
+  --stage-name prod
+
+# Get API URL
+echo "API URL: https://${API_ID}.execute-api.${REGION}.amazonaws.com/prod"
 ```
 
-This function is no longer needed.
+**Update Lambda environment variables with API URL:**
+
+```bash
+API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/prod"
+
+aws lambda update-function-configuration \
+  --function-name pvm-send-approval-email \
+  --environment Variables="{API_BASE_URL=${API_URL}}"
+```
+
+**Verify:**
+```bash
+curl https://${API_ID}.execute-api.${REGION}.amazonaws.com/prod/permissions/status/test
+# Should return 404 or error (expected - endpoint is working)
+```
 
 ---
 
-### Step 7: Test End-to-End
+### 8. Configure SES Email
+
+If you're in **SES Sandbox mode** (default for new accounts), verify your approver email:
 
 ```bash
-# Submit test request
-curl -s -X POST "https://YOUR-API-ID.execute-api.us-west-2.amazonaws.com/prod/permissions/request" \
+# Verify email address
+aws ses verify-email-identity \
+  --email-address your-email@example.com
+
+# Check verification status
+aws ses get-identity-verification-attributes \
+  --identities your-email@example.com
+```
+
+You'll receive a verification email. Click the link to verify.
+
+**For production:** Request SES production access via AWS Console (SES → Account Dashboard → Request Production Access).
+
+**Verify:**
+```bash
+aws ses list-verified-email-addresses
+```
+
+---
+
+### 9. Configure Resource Allowlists
+
+Add authorized resources that agents can request:
+
+```bash
+# Add S3 bucket
+aws dynamodb put-item \
+  --table-name pvm-allowlists \
+  --item '{
+    "list_id": {"S": "s3-buckets"},
+    "resource_arn": {"S": "arn:aws:s3:::your-bucket-name"}
+  }'
+
+# Add another resource
+aws dynamodb put-item \
+  --table-name pvm-allowlists \
+  --item '{
+    "list_id": {"S": "s3-buckets"},
+    "resource_arn": {"S": "arn:aws:s3:::another-bucket"}
+  }'
+
+# Or use helper script
+node scripts/update-allowlist.js add s3-buckets arn:aws:s3:::your-bucket-name
+```
+
+**Verify:**
+```bash
+aws dynamodb scan --table-name pvm-allowlists
+```
+
+---
+
+### 10. Update Agent Polling Script
+
+Configure the agent polling script with your API URL:
+
+Edit `scripts/pvm_agent_poll.py`:
+
+```python
+# Line 22 - Update with your API Gateway URL
+API_BASE = "https://YOUR-API-ID.execute-api.YOUR-REGION.amazonaws.com/prod"
+```
+
+---
+
+## Testing the Deployment
+
+### End-to-End Test
+
+```bash
+# Set API URL
+API_URL="https://YOUR-API-ID.execute-api.REGION.amazonaws.com/prod"
+
+# 1. Submit test request
+REQUEST_ID=$(curl -s -X POST "${API_URL}/permissions/request" \
   -H "Content-Type: application/json" \
   -d '{
-    "requester": {
-      "identity": "arn:aws:iam::YOUR-ACCOUNT-ID:role/test-role",
-      "name": "Deployment Test"
-    },
-    "permissions_requested": [{
-      "action": "s3:GetObject",
-      "resource": "arn:aws:s3:::test-bucket/*"
-    }],
-    "expiration_minutes": 2
-  }' | jq .
+    "requester_email": "test@example.com",
+    "resource_arns": ["arn:aws:s3:::your-bucket-name"],
+    "reason": "Deployment test",
+    "duration_minutes": 5
+  }' | jq -r '.request_id')
 
-# Check status
-REQUEST_ID="<request_id_from_above>"
-curl -s "https://YOUR-API-ID.execute-api.us-west-2.amazonaws.com/prod/permissions/status/${REQUEST_ID}" | jq .
+echo "Request ID: $REQUEST_ID"
 
-# Approve via email link
-# Wait 2 minutes
-# Verify revocation
-curl -s "https://YOUR-API-ID.execute-api.us-west-2.amazonaws.com/prod/permissions/status/${REQUEST_ID}" | jq .
-```
+# 2. Check status
+curl -s "${API_URL}/permissions/status/${REQUEST_ID}" | jq .
 
-Expected flow:
-1. Status: `AWAITING_APPROVAL`
-2. After approval: `ACTIVE`
-3. After 2 min: `REVOKED`
+# Expected: { "status": "PENDING", ... }
 
----
+# 3. Monitor with polling script
+python3 scripts/pvm_agent_poll.py "$REQUEST_ID"
 
-### Step 8: Clean Up Test Data
+# 4. Check email for approval link and click "Approve"
 
-```bash
-node scripts/cleanup-db.js --dry-run  # Review
-node scripts/cleanup-db.js            # Execute
+# 5. Polling script should detect ACTIVE status and exit
+
+# 6. After expiration (5 min), check status again
+curl -s "${API_URL}/permissions/status/${REQUEST_ID}" | jq .
+
+# Expected: { "status": "REVOKED", ... }
 ```
 
 ---
 
 ## Verification Checklist
 
-- [ ] DynamoDB table `pvm-allowlist` created
-- [ ] All Lambda roles have `dynamodb:GetItem` permission
-- [ ] All Lambdas have `DYNAMODB_ALLOWLIST_TABLE` env var
-- [ ] All Lambda functions deployed successfully
-- [ ] Step Functions state machine updated
-- [ ] Test request completes end-to-end
-- [ ] Status endpoint returns correct states
-- [ ] Permissions auto-revoke after expiry
-- [ ] Old test data cleaned up
+- [ ] SSM parameters created (`/pvm/approver-email`, `/pvm/jwt-secret`)
+- [ ] DynamoDB tables created (`pvm-requests`, `pvm-allowlists`)
+- [ ] IAM roles created (`pvm-lambda-execution-role`, `pvm-step-functions-role`)
+- [ ] 6 Lambda functions deployed
+- [ ] Lambda environment variables configured
+- [ ] Step Functions state machine created
+- [ ] API Gateway deployed with 3 endpoints
+- [ ] SES email verified (if sandbox mode)
+- [ ] At least one resource in allowlist
+- [ ] Agent polling script configured with API URL
+- [ ] End-to-end test successful
 
 ---
 
-## Rollback Plan
+## Troubleshooting
 
-If issues arise:
+### Lambda Deployment Issues
+
+**Error: Role not found**
+```bash
+# Verify role exists
+aws iam get-role --role-name pvm-lambda-execution-role
+
+# If missing, create it (see Step 4)
+```
+
+**Error: Insufficient permissions**
+```bash
+# Verify your AWS user has required permissions
+aws sts get-caller-identity
+```
+
+### API Gateway Issues
+
+**403 Forbidden**
+- Check Lambda permission for API Gateway invoke
+- Verify API is deployed to `prod` stage
+
+**404 Not Found**
+- Verify routes are created correctly
+- Check API Gateway deployment
+
+### Step Functions Issues
+
+**Execution fails immediately**
+- Check Lambda ARNs in state machine definition
+- Verify Step Functions role has Lambda invoke permissions
+- Check CloudWatch logs for Lambda errors
+
+### Email Issues
+
+**Approval email not received**
+- Verify SES email identity (sandbox mode)
+- Check spam folder
+- Check `/pvm/approver-email` SSM parameter
+- Check CloudWatch logs for `pvm-send-approval-email`
+
+**Callback doesn't work**
+- Check JWT secret is configured
+- Verify callback URL includes token parameter
+- Check API Gateway `/permissions/callback` route
+
+### Permission Issues
+
+**"Resource not in allowlist"**
+```bash
+# Add resource to allowlist
+aws dynamodb put-item \
+  --table-name pvm-allowlists \
+  --item '{"list_id": {"S": "s3-buckets"}, "resource_arn": {"S": "arn:aws:s3:::bucket"}}'
+```
+
+**Permissions not granted**
+- Check `pvm-grant-permissions` CloudWatch logs
+- Verify Lambda has IAM attach/detach permissions
+- Check target IAM role exists
+
+---
+
+## Updating the Deployment
+
+### Update Lambda Functions
 
 ```bash
-# Revert to previous deployment
-git checkout v1.0-working-with-callbacks
-./deploy-all-functions.sh  # (old deployment script)
+# Rebuild packages
+./scripts/rebuild-lambdas.sh
 
-# Restore old state machine
+# Deploy updates
+./scripts/deploy-lambdas.sh
+```
+
+Or update individually:
+
+```bash
+cd src
+zip -r ../pvm-api.zip .
+cd ..
+
+aws lambda update-function-code \
+  --function-name pvm-api \
+  --zip-file fileb://pvm-api.zip
+```
+
+### Update Step Functions State Machine
+
+```bash
 aws stepfunctions update-state-machine \
-  --state-machine-arn $STATE_MACHINE_ARN \
-  --definition file://docs/step-functions-state-machine-OLD.json \
-  --region us-west-2
+  --state-machine-arn arn:aws:states:REGION:ACCOUNT:stateMachine:pvm-workflow \
+  --definition file://docs/step-functions-state-machine.json
+```
+
+### Update API Gateway
+
+After making changes in Console or CLI:
+
+```bash
+aws apigateway create-deployment \
+  --rest-api-id YOUR-API-ID \
+  --stage-name prod
 ```
 
 ---
 
-## Managing the Allowlist
+## Cost Estimate
 
-**View current allowlist:**
-```bash
-node scripts/update-allowlist.js --view
-```
+**Monthly costs for moderate usage (~100 requests/month):**
 
-**Add new action:**
-```bash
-node scripts/update-allowlist.js
-# Follow interactive prompts
-```
+- **API Gateway:** ~$3.50/million requests = $0.00035
+- **Lambda:** ~$0.20/million requests (with free tier) = minimal
+- **Step Functions:** ~$25/million state transitions = $0.025
+- **DynamoDB:** On-demand pricing, ~$1.25/million reads/writes = $0.001
+- **SES:** ~$0.10/1000 emails = $0.01
+- **SSM Parameters:** Free (standard tier)
 
-**Update from file:**
-```bash
-node scripts/update-allowlist.js --file new-allowlist.json
-```
-
-**Required IAM permission (for human admin):**
-- `dynamodb:GetItem` on `pvm-allowlist`
-- `dynamodb:PutItem` on `pvm-allowlist`
-- `dynamodb:PutItem` on `pvm-audit-logs` (for logging)
+**Total:** ~$0.04/month for light usage, scaling with volume
 
 ---
 
-## Cost Impact
+## Security Considerations
 
-- **DynamoDB:** ~$0.25/month (on-demand, minimal reads/writes)
-- **Lambda:** No change
-- **Step Functions:** Slightly less (fewer state transitions)
+1. **IAM Permissions:** Lambda execution role has powerful IAM permissions (attach/detach policies). Restrict access to PVM infrastructure.
+
+2. **Allowlist Management:** Only add resources to allowlist that agents should access. Regularly audit allowlist entries.
+
+3. **JWT Secret:** Keep `/pvm/jwt-secret` secure. Rotate periodically.
+
+4. **SES Sandbox:** In production, request SES production access to send to any email.
+
+5. **API Access:** Consider adding authentication to API Gateway (IAM auth, API keys, or Cognito).
+
+6. **Audit Trail:** All actions are logged to DynamoDB `pvm-requests` table. Monitor for suspicious activity.
 
 ---
 
 ## Support
 
-- Documentation: `docs/`
-- IAM Setup: `IAM-PERMISSIONS.md`
-- Migration Notes: `DYNAMODB-ALLOWLIST-MIGRATION.md`
-- Callback Removal: `CALLBACK-REMOVAL-SUMMARY.md`
+- **Documentation:** See [README.md](./README.md) for architecture and usage
+- **API Specification:** See [docs/api-contract.md](./docs/api-contract.md)
+- **Architecture:** See [docs/architecture.md](./docs/architecture.md)
 
+---
+
+**Deployment complete!** Your PVM instance is ready for agent requests.
