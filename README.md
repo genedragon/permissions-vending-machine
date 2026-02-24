@@ -17,6 +17,8 @@ The AWS Permissions Vending Machine (PVM) is a serverless solution that allows A
 - **SES** - Sends approval emails with JWT-signed callback links
 - **IAM** - Dynamically attaches/detaches policies for temporary access
 
+![PVM State Machine Graph](./docs/state-machine-graph.jpg)
+
 ## Prerequisites
 
 ### AWS Requirements
