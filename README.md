@@ -110,7 +110,47 @@ This deploys:
 - `pvm-revoke-permissions` - IAM policy detachment
 - `pvm-log-failure` - Error handling
 
-### 5. Create Step Functions State Machine
+### 5. Create IAM Roles
+
+**Create Step Functions execution role:**
+
+```bash
+# Create trust policy
+cat > /tmp/sfn-trust-policy.json << EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "states.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Create role
+aws iam create-role \
+  --role-name pvm-step-functions-role \
+  --assume-role-policy-document file:///tmp/sfn-trust-policy.json
+
+# Attach policy to invoke Lambda
+aws iam attach-role-policy \
+  --role-name pvm-step-functions-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+```
+
+**Create Lambda execution roles** (if using `deploy-lambdas.sh`, this may be automatic):
+
+The Lambda functions need permissions for:
+- CloudWatch Logs (write)
+- DynamoDB (read/write on `pvm-requests` and `pvm-allowlists`)
+- Step Functions (start execution, send task success/failure)
+- IAM (attach/detach policies for grant/revoke)
+- SES (send email)
+- SSM (read parameters)
+
+See `docs/iam-policy-ssm-access.json` for example policies.
+
+### 6. Create Step Functions State Machine
 
 ```bash
 aws stepfunctions create-state-machine \
@@ -119,18 +159,52 @@ aws stepfunctions create-state-machine \
   --role-arn arn:aws:iam::YOUR-ACCOUNT-ID:role/pvm-step-functions-role
 ```
 
-**Note:** You need to create the IAM role for Step Functions first. See [`DEPLOYMENT-GUIDE.md`](./DEPLOYMENT-GUIDE.md) for details.
+### 7. Create API Gateway
 
-### 6. Create API Gateway
+### 7. Create API Gateway
 
-Use AWS Console or CLI to create API Gateway with routes:
-- `POST /permissions/request` → Lambda: `pvm-api`
-- `GET /permissions/status/{requestId}` → Lambda: `pvm-api`
-- `GET /permissions/callback` → Lambda: `pvm-api`
+**Using AWS Console (Easiest):**
+1. Create new REST API named "pvm-api"
+2. Create resources and methods:
+   - `POST /permissions/request` → Lambda: `pvm-api`
+   - `GET /permissions/status/{requestId}` → Lambda: `pvm-api`  
+   - `GET /permissions/callback` → Lambda: `pvm-api`
+3. Deploy to stage "prod"
+4. Note the API URL (e.g., `https://abc123.execute-api.us-west-2.amazonaws.com/prod`)
 
-See [`DEPLOYMENT-GUIDE.md`](./DEPLOYMENT-GUIDE.md) for detailed API Gateway setup.
+**Using AWS CLI:**
 
-### 7. Configure Allowlists
+```bash
+# Create REST API
+API_ID=$(aws apigateway create-rest-api \
+  --name pvm-api \
+  --query 'id' \
+  --output text)
+
+# Get root resource
+ROOT_ID=$(aws apigateway get-resources \
+  --rest-api-id $API_ID \
+  --query 'items[0].id' \
+  --output text)
+
+# Create /permissions resource
+PERM_ID=$(aws apigateway create-resource \
+  --rest-api-id $API_ID \
+  --parent-id $ROOT_ID \
+  --path-part permissions \
+  --query 'id' \
+  --output text)
+
+# Add methods and integrations (see DEPLOYMENT-GUIDE.md for full commands)
+# Then deploy:
+aws apigateway create-deployment \
+  --rest-api-id $API_ID \
+  --stage-name prod
+```
+
+For complete API Gateway CLI setup, see [`DEPLOYMENT-GUIDE.md`](./DEPLOYMENT-GUIDE.md#api-gateway-setup).
+
+### 8. Configure Allowlists
 
 Add authorized resources that agents can request:
 
