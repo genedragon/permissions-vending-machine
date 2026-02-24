@@ -175,10 +175,21 @@ cat > /tmp/pvm-lambda-policy.json << 'EOF'
       "Action": [
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
-        "iam:CreatePolicy",
         "iam:GetRole"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:iam::*:role/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:policy/pvm-temp-*"
     }
   ]
 }
@@ -190,7 +201,12 @@ aws iam put-role-policy \
   --policy-document file:///tmp/pvm-lambda-policy.json
 ```
 
-**Note:** The IAM permissions allow grant/revoke Lambdas to attach/detach policies dynamically.
+**Security Note:** The IAM permissions allow grant/revoke Lambdas to attach/detach policies dynamically. These permissions are restricted to:
+- Attach/detach/get role policies only for roles (not all IAM resources)
+- Create policies only with `pvm-temp-*` prefix (temporary policies)
+- PassRole limited to Lambda service
+
+This prevents the Lambda from creating persistent IAM resources or escalating privileges beyond temporary grants.
 
 #### C. Step Functions Execution Role
 
