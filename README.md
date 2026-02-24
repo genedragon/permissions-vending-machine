@@ -4,14 +4,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-The AWS Permissions Vending Machine (PVM) is a serverless solution that allows AI agents to request temporary IAM permissions through email approval. It provides a secure, auditable workflow for granting time-limited access to AWS resources.
+The AWS Permissions Vending Machine (PVM) is a serverless solution that allows AI agents to request temporary IAM permissions through a REST API. It provides a secure, auditable workflow for granting time-limited access to AWS resources.
 
 **Perfect for:** OpenClaw agents running on AWS that need temporary elevated permissions.
 
 ## Architecture
 
 - **API Gateway** - REST API for permission requests and status checks
-- **Step Functions** - Orchestrates approval workflow with email callback
+- **Step Functions** - Orchestrates approval workflow with human-in-the-loop approvals and strict expirations
 - **Lambda Functions** - Handles requests, approvals, grants, and revocations
 - **DynamoDB** - Stores permission requests and allowlists
 - **SES** - Sends approval emails with JWT-signed callback links
