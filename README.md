@@ -1,4 +1,4 @@
-# AWS Permissions Vending Machine (PVM)
+# Permissions Vending Machine (PVM) for Agents running in AWS
 
 **Temporary IAM permission grants via email approval for AI agents**
 
