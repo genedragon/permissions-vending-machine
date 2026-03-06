@@ -1,0 +1,18 @@
+{
+  "description": "Email and messaging. Covers SES email sending, SNS notifications, and SQS queue operations.",
+  "allowedActions": [
+    "ses:SendEmail",
+    "ses:SendRawEmail",
+    "ses:GetSendQuota",
+    "ses:GetSendStatistics",
+    "ses:ListIdentities",
+    "ses:GetIdentityVerificationAttributes",
+    "ses:VerifyEmailIdentity",
+    "sns:Publish",
+    "sns:ListTopics",
+    "sns:GetTopicAttributes",
+    "sns:CreateTopic",
+    "sns:Subscribe",
+    "sns:Unsubscribe"
+  ]
+}

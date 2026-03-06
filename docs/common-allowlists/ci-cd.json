@@ -1,0 +1,25 @@
+{
+  "description": "CI/CD pipeline operations. Covers ECR image management, Lambda function deployment, and CodeBuild.",
+  "allowedActions": [
+    "ecr:GetAuthorizationToken",
+    "ecr:BatchCheckLayerAvailability",
+    "ecr:GetDownloadUrlForLayer",
+    "ecr:BatchGetImage",
+    "ecr:PutImage",
+    "ecr:InitiateLayerUpload",
+    "ecr:UploadLayerPart",
+    "ecr:CompleteLayerUpload",
+    "ecr:DescribeRepositories",
+    "ecr:ListImages",
+    "lambda:GetFunction",
+    "lambda:UpdateFunctionCode",
+    "lambda:UpdateFunctionConfiguration",
+    "lambda:ListFunctions",
+    "lambda:PublishVersion",
+    "lambda:CreateAlias",
+    "lambda:UpdateAlias",
+    "codebuild:StartBuild",
+    "codebuild:BatchGetBuilds",
+    "codebuild:ListBuildsForProject"
+  ]
+}
