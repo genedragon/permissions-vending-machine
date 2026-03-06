@@ -1,0 +1,29 @@
+{
+  "description": "Monitoring and observability. Covers CloudWatch metrics/logs/alarms, SNS notifications, and SQS queue operations.",
+  "allowedActions": [
+    "cloudwatch:PutMetricData",
+    "cloudwatch:GetMetricData",
+    "cloudwatch:GetMetricStatistics",
+    "cloudwatch:ListMetrics",
+    "cloudwatch:DescribeAlarms",
+    "cloudwatch:PutMetricAlarm",
+    "cloudwatch:DeleteAlarms",
+    "logs:CreateLogGroup",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
+    "logs:GetLogEvents",
+    "logs:FilterLogEvents",
+    "logs:DescribeLogGroups",
+    "logs:DescribeLogStreams",
+    "sns:Publish",
+    "sns:ListTopics",
+    "sns:GetTopicAttributes",
+    "sns:Subscribe",
+    "sns:Unsubscribe",
+    "sqs:SendMessage",
+    "sqs:ReceiveMessage",
+    "sqs:DeleteMessage",
+    "sqs:GetQueueAttributes",
+    "sqs:ListQueues"
+  ]
+}

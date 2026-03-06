@@ -1,0 +1,29 @@
+{
+  "description": "Static website hosting with S3 + CloudFront CDN. Covers bucket website config, CloudFront distribution management, and cache invalidation.",
+  "allowedActions": [
+    "s3:PutObject",
+    "s3:GetObject",
+    "s3:DeleteObject",
+    "s3:ListBucket",
+    "s3:PutBucketWebsite",
+    "s3:GetBucketWebsite",
+    "s3:DeleteBucketWebsite",
+    "s3:PutBucketPolicy",
+    "s3:GetBucketPolicy",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:GetBucketPublicAccessBlock",
+    "cloudfront:CreateDistribution",
+    "cloudfront:GetDistribution",
+    "cloudfront:UpdateDistribution",
+    "cloudfront:ListDistributions",
+    "cloudfront:CreateInvalidation",
+    "cloudfront:GetInvalidation",
+    "cloudfront:ListInvalidations",
+    "cloudfront:CreateOriginAccessControl",
+    "cloudfront:GetOriginAccessControl",
+    "cloudfront:ListOriginAccessControls",
+    "cloudfront:TagResource",
+    "cloudfront:UntagResource",
+    "cloudfront:ListTagsForResource"
+  ]
+}
