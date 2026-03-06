@@ -46,8 +46,9 @@ const requestSchema = {
           },
           resource: {
             type: 'string',
-            pattern: '^arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:.+$',
-            description: 'AWS resource ARN'
+            // Accept either a full ARN or "*" (for global services like CloudFront)
+            pattern: '^(arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:.+|\\*)$',
+            description: 'AWS resource ARN or * for global services'
           },
           reason: {
             type: 'string',
@@ -148,13 +149,19 @@ function validatePermissions(permissions) {
 
     // Check for wildcard resources on write actions
     // Allow path-specific wildcards (e.g., bucket/prefix/*) but not broad wildcards (*)
+    //
+    // Exception: Global AWS services (CloudFront, ACM, WAF, etc.) require Resource: "*"
+    // for most operations because they don't support resource-level ARNs.
+    // For these services, we allow broad wildcards even for write actions.
     const isReadAction = action.match(/^[a-z0-9-]+:(Get|List|Describe|Head)/i);
     const isBroadWildcard = resource === '*' || resource.match(/^arn:aws:[a-z0-9-]+:[^:]*:[^:]*:\*$/);
+    const isGlobalService = isGlobalAWSService(action);
     
-    if (!isReadAction && isBroadWildcard) {
+    if (!isReadAction && !isGlobalService && isBroadWildcard) {
       errors.push({
         field: 'permissions_requested',
-        message: `Broad wildcard resources not allowed for write action '${action}'`,
+        message: `Broad wildcard resources not allowed for write action '${action}'. ` +
+                 `Use a scoped resource ARN (e.g., arn:aws:service:region:account:resource/*)`,
         value: resource
       });
     }
@@ -165,6 +172,41 @@ function validatePermissions(permissions) {
   }
 
   return { valid: true, errors: [] };
+}
+
+/**
+ * Check if an IAM action belongs to a global AWS service.
+ * Global services (CloudFront, ACM, WAF, etc.) don't support resource-level
+ * ARNs for most operations — they inherently require Resource: "*".
+ * 
+ * This prevents false rejections when agents request legitimate permissions
+ * for services that simply can't be scoped to specific ARNs.
+ *
+ * @param {string} action - IAM action (e.g., "cloudfront:CreateDistribution")
+ * @returns {boolean} true if the action belongs to a global service
+ */
+function isGlobalAWSService(action) {
+  // Extract service prefix (e.g., "cloudfront" from "cloudfront:CreateDistribution")
+  const service = action.split(':')[0];
+  
+  // AWS services that require Resource: "*" for most/all operations
+  const GLOBAL_SERVICES = new Set([
+    'cloudfront',     // CDN — distributions are global, no resource-level ARNs for create/list
+    'acm',            // Certificate Manager — certificates referenced by ARN but many ops need *
+    'waf',            // Web Application Firewall (classic)
+    'wafv2',          // Web Application Firewall v2
+    'route53',        // DNS — hosted zones are global
+    'route53domains', // Domain registration
+    'sts',            // Security Token Service
+    'support',        // AWS Support
+    'budgets',        // Billing budgets
+    'ce',             // Cost Explorer
+    'organizations',  // AWS Organizations (note: should also be in denylist)
+    'shield',         // DDoS protection
+    'globalaccelerator', // Global Accelerator
+  ]);
+
+  return GLOBAL_SERVICES.has(service);
 }
 
 /**
