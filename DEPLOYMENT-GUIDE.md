@@ -242,6 +242,67 @@ aws iam get-role --role-name pvm-lambda-execution-role
 aws iam get-role --role-name pvm-step-functions-role
 ```
 
+#### D. Grant/Revoke Lambda IAM Permissions (Critical)
+
+> ⚠️ **Without this step, PVM deploys but cannot actually grant or revoke permissions.**
+> The Grant and Revoke Lambdas need `iam:PutRolePolicy` and `iam:DeleteRolePolicy`
+> to attach/detach temporary policies on target roles.
+
+Run the automated setup script:
+
+```bash
+# Auto-detect Lambda roles and apply IAM permissions
+./scripts/setup-iam-roles.sh
+
+# Or scope to specific target roles for tighter security
+./scripts/setup-iam-roles.sh --target-role-pattern "openclaw-*"
+
+# Preview without applying
+./scripts/setup-iam-roles.sh --dry-run
+```
+
+**Manual alternative:**
+
+```bash
+# Find the Grant Lambda role name
+GRANT_ROLE=$(aws iam list-roles \
+  --query "Roles[?contains(RoleName, 'GrantPermissions')].RoleName" \
+  --output text)
+
+# Find the Revoke Lambda role name
+REVOKE_ROLE=$(aws iam list-roles \
+  --query "Roles[?contains(RoleName, 'RevokePermissions')].RoleName" \
+  --output text)
+
+# Apply IAM permissions to both roles
+for ROLE in "$GRANT_ROLE" "$REVOKE_ROLE"; do
+  aws iam put-role-policy \
+    --role-name "$ROLE" \
+    --policy-name pvm-grant-revoke-permissions \
+    --policy-document '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Sid": "PVMGrantRevokePermissions",
+        "Effect": "Allow",
+        "Action": [
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:GetRole"
+        ],
+        "Resource": "arn:aws:iam::YOUR_ACCOUNT_ID:role/*"
+      }]
+    }'
+done
+```
+
+**Verify:**
+```bash
+aws iam get-role-policy --role-name "$GRANT_ROLE" --policy-name pvm-grant-revoke-permissions
+aws iam get-role-policy --role-name "$REVOKE_ROLE" --policy-name pvm-grant-revoke-permissions
+```
+
 ---
 
 ### 5. Deploy Lambda Functions
@@ -689,9 +750,18 @@ curl -s "${API_URL}/permissions/status/${REQUEST_ID}" | jq .
 
 ## Verification Checklist
 
+Run the automated smoke test to verify all prerequisites:
+
+```bash
+./scripts/smoke-test.sh
+```
+
+Or check manually:
+
 - [ ] SSM parameters created (`/pvm/approver-email`, `/pvm/jwt-secret`)
 - [ ] DynamoDB tables created (`pvm-requests`, `pvm-allowlists`)
 - [ ] IAM roles created (`pvm-lambda-execution-role`, `pvm-step-functions-role`)
+- [ ] Grant/Revoke Lambda roles have IAM permissions (`./scripts/setup-iam-roles.sh`)
 - [ ] 6 Lambda functions deployed
 - [ ] Lambda environment variables configured
 - [ ] Step Functions state machine created
