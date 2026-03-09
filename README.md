@@ -47,18 +47,6 @@ cd aws-permissions-vending-machine
 npm install
 ```
 
-### Option 2: Install as OpenClaw Skill
-
-For OpenClaw users, install as a skill:
-
-```bash
-openclaw skills install aws-pvm
-cd ~/.openclaw/skills/aws-pvm
-npm install
-```
-
-**Skill Name:** `aws-pvm`
-
 ### 1. Install Dependencies
 
 ```bash
@@ -435,20 +423,16 @@ python3 scripts/pvm_agent_poll.py $REQUEST_ID
 node scripts/cleanup-db.js $REQUEST_ID
 ```
 
-## For OpenClaw Integration
+## OpenClaw Integration
 
-This PVM solution is designed to work as an OpenClaw agent skill. To use:
+See **[OPENCLAW-INTEGRATION.md](./OPENCLAW-INTEGRATION.md)** for complete guide on integrating PVM with OpenClaw agents.
 
-1. **Install this repo** in your OpenClaw workspace
-2. **Deploy AWS infrastructure** following steps above
-3. **Configure OpenClaw agent** to use `scripts/pvm_agent_poll.py`
-4. **Set environment variables** for API endpoint
-
-The agent can then autonomously:
-- Request permissions when needed
-- Poll for approval
-- Use granted permissions
-- Handle expiration gracefully
+Quick links:
+- [Installation Options](./OPENCLAW-INTEGRATION.md#installation-options)
+- [Agent Configuration](./OPENCLAW-INTEGRATION.md#agent-configuration)
+- [Usage Workflow](./OPENCLAW-INTEGRATION.md#agent-usage-workflow)
+- [Example Code](./OPENCLAW-INTEGRATION.md#example-agent-requesting-s3-access)
+- [Troubleshooting](./OPENCLAW-INTEGRATION.md#troubleshooting)
 
 ## Complete Deployment Guide
 
